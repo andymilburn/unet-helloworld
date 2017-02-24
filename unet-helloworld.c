@@ -172,6 +172,7 @@ static void usage(const char *errmsg)
 union generic_sockaddr {
 	struct sockaddr sa;
 	struct sockaddr_in sin;
+	struct sockaddr_unet sunet;
 	struct sockaddr_storage sas;
 };
 
@@ -228,10 +229,43 @@ int main(int argc, char *argv[])
 	}
 
 	if (protocol_is_unet(protocol)) {
-		printf("Doesn't work yet\n");
-		exit(EXIT_SUCCESS);
-	}
-	if (protocol_is_ipv4(protocol)) {
+		af = AF_UNET;
+		st = SOCK_DGRAM;
+		sp = 0;
+		has_bind = !!bind_endpoint;
+		has_addr = !!endpoint;
+
+		if (!has_bind)
+			bind_endpoint = "0.0";
+		if (!has_addr)
+			endpoint = "0.1";
+
+		/* no index? use an ephemeral port */
+		if (!endpoint_index)
+			endpoint_index = 65536 + (rand() % 65536);
+
+		/* no index? use an ephemeral port */
+		if (!bind_endpoint_index)
+			bind_endpoint_index = 65536 + (rand() % 65536);
+
+		sa.sunet.sunet_family = af;
+		sa.sunet.sunet_addr.sunet_message_type = endpoint_index;
+
+		bsa.sin.sin_family = af;
+		bsa.sin.sin_port = htons(bind_endpoint_index);
+		s = inet_pton(af, bind_endpoint, &bsa.sin.sin_addr);
+		if (s != 1) {
+			if (s == 0)
+				errno = -EINVAL;
+			perror("bad bind endpoint address");
+			exit(EXIT_FAILURE);
+		}
+
+		s = asprintf(&e_txt, "%s:%u", endpoint, endpoint_index); 
+		s = asprintf(&be_txt, "%s:%u", bind_endpoint, bind_endpoint_index); 
+
+
+	} else if (protocol_is_ipv4(protocol)) {
 		af = AF_INET;
 		if (protocol == protocol_udp) {
 			st = SOCK_DGRAM;
