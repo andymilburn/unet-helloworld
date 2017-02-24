@@ -169,16 +169,24 @@ static void usage(const char *errmsg)
 			usage_long_opts, usage_opts_help);
 }
 
+union generic_sockaddr {
+	struct sockaddr sa;
+	struct sockaddr_in sin;
+	struct sockaddr_storage sas;
+};
+
 int main(int argc, char *argv[])
 {
 	const char *optname;
-	int s, opt, optidx;
-	int af;
-	struct in_addr ipv4_addr, ipv4_bindaddr;
+	int s, cfd, err, opt, optidx, len;
+	int af = 0, st = 0, sp = 0;
 	char *e_txt = NULL, *be_txt = NULL;
-
-	ipv4_addr.s_addr = INADDR_ANY;
-	ipv4_bindaddr.s_addr = INADDR_ANY;
+	bool has_bind = false, has_addr = false;
+	union generic_sockaddr sa, bsa, psa;
+	char peer_addr[256], buf[65536];
+	const char *p;
+	unsigned int peer_index;
+	socklen_t slen;
 
 	while ((opt = getopt_long(argc, argv, usage_short_opts,
 				  usage_long_opts, &optidx)) != EOF) {
@@ -225,36 +233,39 @@ int main(int argc, char *argv[])
 	}
 	if (protocol_is_ipv4(protocol)) {
 		af = AF_INET;
-		if (!server_mode) {
-			/* client mode and no endpoint? loopback */
-			if (!endpoint)
-				endpoint = "127.0.0.1";
-			printf("client\n");
+		if (protocol == protocol_udp) {
+			st = SOCK_DGRAM;
+			sp = IPPROTO_UDP;
 		} else {
-			/* server mode and no endpoint? use any */
-			if (!endpoint)
-				endpoint = "0.0.0.0";
-			printf("server\n");
+			st = SOCK_STREAM;
+			sp = IPPROTO_TCP;
 		}
+
+		has_bind = !!bind_endpoint;
+		has_addr = !!endpoint;
+
+		if (!has_bind)
+			bind_endpoint = "0.0.0.0";
+		if (!has_addr)
+			endpoint = "127.0.0.1";
 
 		/* no index? use an ephemeral port */
 		if (!endpoint_index)
 			endpoint_index = 49152 + (rand() % (65536 - 49152));
 
 		/* no index? use an ephemeral port */
-		if (bind_endpoint && !bind_endpoint_index)
+		if (!bind_endpoint_index)
 			bind_endpoint_index = 49152 + (rand() % (65536 - 49152));
 
-		if (!bind_endpoint)
-			bind_endpoint = "0.0.0.0";
-
-		if (endpoint_index >= (1 << 16)) {
+		if (endpoint_index > 65535 || bind_endpoint_index > 65535) {
 			errno = EINVAL;
-			perror("bad client endpoint index option");
+			perror("bad endpoint index(es) option(s)");
 			exit(EXIT_FAILURE);
 		}
 
-		s = inet_pton(af, endpoint, &ipv4_addr);
+		sa.sin.sin_family = af;
+		sa.sin.sin_port = htons(endpoint_index);
+		s = inet_pton(af, endpoint, &sa.sin.sin_addr);
 		if (s != 1) {
 			if (s == 0)
 				errno = -EINVAL;
@@ -262,23 +273,157 @@ int main(int argc, char *argv[])
 			exit(EXIT_FAILURE);
 		}
 
-		s = inet_pton(af, bind_endpoint, &ipv4_bindaddr);
+		bsa.sin.sin_family = af;
+		bsa.sin.sin_port = htons(bind_endpoint_index);
+		s = inet_pton(af, bind_endpoint, &bsa.sin.sin_addr);
 		if (s != 1) {
 			if (s == 0)
 				errno = -EINVAL;
-			perror("bad endpoint address");
+			perror("bad bind endpoint address");
 			exit(EXIT_FAILURE);
 		}
 
 		s = asprintf(&e_txt, "%s:%u", endpoint, endpoint_index); 
 		s = asprintf(&be_txt, "%s:%u", bind_endpoint, bind_endpoint_index); 
+
 	} else
 		usage("Unknown protocol type");
 
-	printf("Hello uNet World... %s %s ep=%s be=%s\n",
+	printf("Hello uNet World... %s %s%s%s%s%s\n",
 			server_mode ? "server" : "client",
 			protocol_to_txt(protocol),
-			e_txt  ? e_txt  : "<NULL>",
-			be_txt ? be_txt : "<NULL>");
+			has_addr ? " ep=" : "",
+			has_addr ? e_txt : "",
+			has_bind ? " be=" : "",
+			has_bind ? be_txt : "");
+
+	s = socket(af, st, sp);
+	if (s == -1) {
+		perror("failed to create socket");
+		exit(EXIT_FAILURE);
+	}
+
+	if (server_mode || has_bind) {
+		err = bind(s, &bsa.sa, sizeof(bsa));
+		if (err == -1) {
+			perror("failed to bind\n");
+			exit(EXIT_FAILURE);
+		}
+		printf("bound to %s\n", be_txt);
+	}
+
+	if (server_mode && (st == SOCK_STREAM || st == SOCK_SEQPACKET)) {
+		err = listen(s, 5);
+		if (err == -1) {
+			perror("failed to listen\n");
+			exit(EXIT_FAILURE);
+		}
+	}
+
+	if (server_mode) {
+		printf("Ctrl-C to exit\n");
+		if (st == SOCK_STREAM || st == SOCK_SEQPACKET) {
+			slen = sizeof(psa);
+			while ((cfd = accept(s, &psa.sa, &slen)) != -1) {
+				if (protocol_is_ipv4(protocol)) {
+					peer_index = ntohs(psa.sin.sin_port);
+					p = inet_ntop(af, &psa.sin.sin_addr,
+					              peer_addr,
+						      sizeof(peer_addr));
+					if (!p) {
+						perror("failed to inet_ntop\n");
+						exit(EXIT_FAILURE);
+					}
+				} else {
+					/* not yet */
+					peer_addr[0] = '\0';
+					peer_index = 0;
+				}
+				printf("Accepted connection from %s:%u\n",
+						peer_addr, peer_index);
+				while ((len = recv(cfd, buf, sizeof(buf) - 1, 0)) > 0) {
+
+					buf[len] = '\0';
+					printf("recv from %s:%u: %s\n", peer_addr, peer_index, buf);
+#if 0
+					len = send(cfd, buf, len, 0);
+					if (len == -1) {
+						perror("failed to send\n");
+						exit(EXIT_FAILURE);
+					}
+#endif
+				}
+				if (len == -1) {
+					perror("failed to recv\n");
+					exit(EXIT_FAILURE);
+				}
+				if (len == 0)
+					printf("Connection from %s:%u closed\n",
+							peer_addr, peer_index);
+				slen = sizeof(psa);
+			}
+			if (cfd == -1) {
+				perror("failed to accept\n");
+				exit(EXIT_FAILURE);
+			}
+		} else {
+			slen = sizeof(psa);
+			while ((len = recvfrom(s, buf, sizeof(buf) -1, 0,
+					       &psa.sa, &slen)) > 0) {
+
+				buf[len] = '\0';
+				if (protocol_is_ipv4(protocol)) {
+					peer_index = ntohs(psa.sin.sin_port);
+					p = inet_ntop(af, &psa.sin.sin_addr,
+					              peer_addr,
+						      sizeof(peer_addr));
+					if (!p) {
+						perror("failed to inet_ntop\n");
+						exit(EXIT_FAILURE);
+					}
+				} else {
+					/* not yet */
+					peer_addr[0] = '\0';
+					peer_index = 0;
+				}
+
+				printf("recv from %s:%u: %s\n", peer_addr,
+						peer_index, buf);
+
+#if 0
+				len = sendto(s, buf, len, 0, &psa.sa, slen);
+				if (len == -1) {
+					perror("failed to sendto\n");
+					exit(EXIT_FAILURE);
+				}
+#endif
+				slen = sizeof(psa);
+			}
+			if (len == -1) {
+				perror("failed to recvfrom\n");
+				exit(EXIT_FAILURE);
+			}
+		}
+	} else {
+		err = connect(s, &sa.sa, sizeof(sa));
+		if (err == -1) {
+			perror("failed to connect\n");
+			exit(EXIT_FAILURE);
+		}
+
+		while (optind < argc) {
+			p = argv[optind];
+			len = send(s, p, strlen(p), 0);
+			if (len == -1) {
+				perror("failed to send\n");
+				exit(EXIT_FAILURE);
+			}
+			printf("send to %s: %s\n", e_txt, p);
+			optind++;
+		}
+	}
+
+	close(s);
+
 	return 0;
 }
