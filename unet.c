@@ -105,8 +105,10 @@ int unet_str_to_addr(const char *str, int size, struct unet_addr *ua)
 		size--;
 	se = str + size;
 
-	if (size <= 1)
-		return -EINVAL;
+	if (size <= 1) {
+		errno = EINVAL;
+		return -1;
+	}
 
 	/* hex address? */
 	if (*str == '$') {
@@ -124,35 +126,49 @@ int unet_str_to_addr(const char *str, int size, struct unet_addr *ua)
 		c = *s;
 		if (c == '.') {
 			/* no more than 2 dots */
-			if (dots > 1)
-				return -EINVAL;
+			if (dots > 1) {
+				errno = EINVAL;
+				return -1;
+			}
 			/* second dot must be preceded by a colon */
-			if (dots == 1 && colons == 0)
-				return -EINVAL;
+			if (dots == 1 && colons == 0) {
+				errno = EINVAL;
+				return -1;
+			}
 			dotsp[dots++] = s;
 		} else if (c == ':') {
 			/* no more than 1 colon */
-			if (colons > 0)
-				return -EINVAL;
+			if (colons > 0) {
+				errno = EINVAL;
+				return -1;
+			}
 			/* we must have encountered a dot already */
-			if (dots == 0)
-				return -EINVAL;
+			if (dots == 0) {
+				errno = EINVAL;
+				return -1;
+			}
 			colonp = s;
 			colons++;
 		} else if (is_hex) {
 			/* hex-address and is not a hex digit */
-			if (!isxdigit(c) && !isdigit(c))
-				return -EINVAL;
+			if (!isxdigit(c) && !isdigit(c)) {
+				errno = EINVAL;
+				return -1;
+			}
 		} else {
 			/* if it's not a valid addr */
-			if (!is_valid_ua_addr_char(c))
-				return -EINVAL;
+			if (!is_valid_ua_addr_char(c)) {
+				errno = EINVAL;
+				return -1;
+			}
 		}
 	}
 
 	/* at least one dot must be present (prefix is mandatory) */
-	if (dots == 0)
-		return -EINVAL;
+	if (dots == 0) {
+		errno = EINVAL;
+		return -1;
+	}
 
 	/* we have a valid address string */
 	s = str;
@@ -167,8 +183,10 @@ int unet_str_to_addr(const char *str, int size, struct unet_addr *ua)
 		while (len > 0) { \
 			if (is_hex) { \
 				/* there must be two bytes at least */ \
-				if (len < 2) \
-					return -EINVAL; \
+				if (len < 2) { \
+	 				errno = EINVAL; \
+					return -1; \
+	 			} \
 				c = *s++; \
 				if (c >= '0' && c <= '9') \
 					v = c - '0'; \

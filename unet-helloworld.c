@@ -198,7 +198,7 @@ int main(int argc, char *argv[])
 				bind_endpoint = optarg;
 			else if (!strcmp(optname, "bind-endpoint-index"))
 				bind_endpoint_index = atoi(optarg);
-			else 
+			else
 				usage("unknown long option");
 			break;
 		case 's':
@@ -250,20 +250,22 @@ int main(int argc, char *argv[])
 
 		sa.sunet.sunet_family = af;
 		sa.sunet.sunet_addr.sunet_message_type = endpoint_index;
-
-		bsa.sin.sin_family = af;
-		bsa.sin.sin_port = htons(bind_endpoint_index);
-		s = inet_pton(af, bind_endpoint, &bsa.sin.sin_addr);
-		if (s != 1) {
-			if (s == 0)
-				errno = -EINVAL;
-			perror("bad bind endpoint address");
+		err = unet_str_to_addr(endpoint, strlen(endpoint), &sa.sunet.sunet_addr.sunet_addr);
+		if (err == -1) {
+			perror("bad unet endpoint address");
 			exit(EXIT_FAILURE);
 		}
 
-		s = asprintf(&e_txt, "%s:%u", endpoint, endpoint_index); 
-		s = asprintf(&be_txt, "%s:%u", bind_endpoint, bind_endpoint_index); 
+		bsa.sunet.sunet_family = af;
+		bsa.sunet.sunet_addr.sunet_message_type = bind_endpoint_index;
+		err = unet_str_to_addr(bind_endpoint, strlen(bind_endpoint), &bsa.sunet.sunet_addr.sunet_addr);
+		if (err == -1) {
+			perror("bad unet bind endpoint address");
+			exit(EXIT_FAILURE);
+		}
 
+		s = asprintf(&e_txt, "%s/%u", endpoint, endpoint_index);
+		s = asprintf(&be_txt, "%s/%u", bind_endpoint, bind_endpoint_index);
 
 	} else if (protocol_is_ipv4(protocol)) {
 		af = AF_INET;
@@ -317,8 +319,8 @@ int main(int argc, char *argv[])
 			exit(EXIT_FAILURE);
 		}
 
-		s = asprintf(&e_txt, "%s:%u", endpoint, endpoint_index); 
-		s = asprintf(&be_txt, "%s:%u", bind_endpoint, bind_endpoint_index); 
+		s = asprintf(&e_txt, "%s:%u", endpoint, endpoint_index);
+		s = asprintf(&be_txt, "%s:%u", bind_endpoint, bind_endpoint_index);
 
 	} else
 		usage("Unknown protocol type");
@@ -458,6 +460,9 @@ int main(int argc, char *argv[])
 	}
 
 	close(s);
+
+	free(e_txt);
+	free(be_txt);
 
 	return 0;
 }

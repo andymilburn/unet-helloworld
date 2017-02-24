@@ -193,7 +193,7 @@ static inline int unet_addr_eq(const struct unet_addr *ua1,
 		return 1;
 
 	/* rely on no-gaps in the address structure */
-	return memcmp(ua1, ua2, offsetof(struct unet_addr, addr_buffer) + 
+	return memcmp(ua1, ua2, offsetof(struct unet_addr, addr_buffer) +
 			unet_addr_buffer_len(ua1)) == 0;
 }
 
@@ -205,7 +205,7 @@ static inline void unet_addr_copy(struct unet_addr *dst, const struct unet_addr 
 }
 
 struct unet_addr_sa {
-	__le32 sunet_message_type;
+	__u32 sunet_message_type;
 	struct unet_addr sunet_addr;
 };
 
