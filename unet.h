@@ -205,8 +205,8 @@ static inline void unet_addr_copy(struct unet_addr *dst, const struct unet_addr 
 }
 
 struct unet_addr_sa {
-	__u32 sunet_message_type;
-	struct unet_addr sunet_addr;
+	__u32 message_type;
+	struct unet_addr addr;
 };
 
 struct sockaddr_unet {

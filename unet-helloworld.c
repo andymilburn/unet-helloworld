@@ -3,6 +3,11 @@
  *
  * Example using unet sockets
  */
+
+#if HAVE_CONFIG_H
+#include <config.h>
+#endif
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,24 +26,8 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 
+#include "unet-common.h"
 #include "unet-helloworld.h"
-
-enum protocol {
-	protocol_unknown,
-	protocol_udp,
-	protocol_tcp,
-	protocol_unet
-};
-
-static inline bool protocol_is_ipv4(enum protocol p)
-{
-	return p == protocol_tcp || p == protocol_udp;
-}
-
-static inline bool protocol_is_unet(enum protocol p)
-{
-	return p == protocol_unet;
-}
 
 bool server_mode = true;
 enum protocol protocol = protocol_udp;
@@ -46,36 +35,6 @@ char *endpoint = NULL;
 unsigned int endpoint_index = 0;
 char *bind_endpoint = NULL;
 unsigned int bind_endpoint_index = 0;
-
-static const char *protocol_txt[] = {
-	[protocol_unknown]  = "*unknown*",
-	[protocol_udp]  = "udp",
-	[protocol_tcp]  = "tcp",
-	[protocol_unet] = "unet",
-};
-
-const char *protocol_to_txt(enum protocol p)
-{
-	if (p < protocol_udp || p > protocol_unet)
-		return NULL;
-
-	return protocol_txt[p];
-}
-
-enum protocol txt_to_protocol(const char *txt)
-{
-	enum protocol p;
-
-	if (!txt)
-		return -1;
-
-	for (p = protocol_udp; p <= protocol_unet; p++) {
-		if (!strcmp(protocol_txt[p], txt))
-			return p;
-	}
-
-	return protocol_unknown;
-}
 
 static const char usage_synopsis[] = PACKAGE " [options] <input file>";
 static const char usage_short_opts[] = "scp:e:i:hv";
@@ -91,10 +50,11 @@ static struct option const usage_long_opts[] = {
 	{ "version",		no_argument,       NULL, 'v'},
 	{ NULL,			no_argument,       NULL, 0x0},
 };
+
 static const char * const usage_opts_help[] = {
 	"\n\tServer mode (default)",
 	"\n\tClient mode",
-	"\n\tProtocol one of (udp|tcp|unet) udp is default",
+	"\n\tProtocol one of (udp|tcp|ip-raw|unet|unet-raw) udp is default",
 	"\n\tEndpoint (hostname or ip addr for udp/tcp, unet addr for unet)",
 	"\n\tEndpoint index (port# for udp/tcp, message type for unet)",
 	"\n\tBind endpoint (hostname or ip addr for udp/tcp, unet addr for unet)",
@@ -104,88 +64,23 @@ static const char * const usage_opts_help[] = {
 	NULL,
 };
 
-static void print_usage(const char *errmsg, const char *synopsis,
-		const char *short_opts, struct option const long_opts[],
-		const char * const opts_help[]) __attribute__((noreturn));
-static void usage(const char *errmsg) __attribute__((noreturn));
-
-static void print_usage(const char *errmsg, const char *synopsis,
-		const char *short_opts, struct option const long_opts[],
-		const char * const opts_help[])
-{
-	FILE *fp = errmsg ? stderr : stdout;
-	const char a_arg[] = "<arg>";
-	size_t a_arg_len = strlen(a_arg) + 1;
-	size_t i;
-	int optlen;
-
-	fprintf(fp,
-		"Usage: %s\n"
-		"\n"
-		"Options: -[%s]\n", synopsis, short_opts);
-
-	/* prescan the --long opt length to auto-align */
-	optlen = 0;
-	for (i = 0; long_opts[i].name; ++i) {
-		/* +1 is for space between --opt and help text */
-		int l = strlen(long_opts[i].name) + 1;
-		if (long_opts[i].has_arg == required_argument)
-			l += a_arg_len;
-		if (optlen < l)
-			optlen = l;
-	}
-
-	for (i = 0; long_opts[i].name; ++i) {
-		/* helps when adding new applets or options */
-		assert(opts_help[i] != NULL);
-
-		/* first output the short flag if it has one */
-		if (long_opts[i].val > '~')
-			fprintf(fp, "      ");
-		else
-			fprintf(fp, "  -%c, ", long_opts[i].val);
-
-		/* then the long flag */
-		if (long_opts[i].has_arg == no_argument)
-			fprintf(fp, "--%-*s", optlen, long_opts[i].name);
-		else
-			fprintf(fp, "--%s %s%*s", long_opts[i].name, a_arg,
-				(int)(optlen - strlen(long_opts[i].name) - a_arg_len), "");
-
-		/* finally the help text */
-		fprintf(fp, "%s\n", opts_help[i]);
-	}
-
-	if (errmsg) {
-		fprintf(fp, "\nError: %s\n", errmsg);
-		exit(EXIT_FAILURE);
-	}
-	exit(EXIT_SUCCESS);
-}
-
 static void usage(const char *errmsg)
 {
 	print_usage(errmsg, usage_synopsis, usage_short_opts,
 			usage_long_opts, usage_opts_help);
 }
 
-union generic_sockaddr {
-	struct sockaddr sa;
-	struct sockaddr_in sin;
-	struct sockaddr_unet sunet;
-	struct sockaddr_storage sas;
-};
-
 int main(int argc, char *argv[])
 {
 	const char *optname;
-	int s, cfd, err, opt, optidx, len;
+	int s, cfd, err, opt, optidx, len, i;
 	int af = 0, st = 0, sp = 0;
 	char *e_txt = NULL, *be_txt = NULL;
 	bool has_bind = false, has_addr = false;
 	union generic_sockaddr sa, bsa, psa;
-	char peer_addr[256], buf[65536];
+	char my_addr[256], peer_addr[256], buf[65536];
 	const char *p;
+	char *uatxt;
 	unsigned int peer_index;
 	socklen_t slen;
 
@@ -249,32 +144,41 @@ int main(int argc, char *argv[])
 			bind_endpoint_index = 65536 + (rand() % 65536);
 
 		sa.sunet.sunet_family = af;
-		sa.sunet.sunet_addr.sunet_message_type = endpoint_index;
-		err = unet_str_to_addr(endpoint, strlen(endpoint), &sa.sunet.sunet_addr.sunet_addr);
+		sa.sunet.sunet_addr.message_type = endpoint_index;
+		err = unet_str_to_addr(endpoint, strlen(endpoint), &sa.sunet.sunet_addr.addr);
 		if (err == -1) {
 			perror("bad unet endpoint address");
 			exit(EXIT_FAILURE);
 		}
 
 		bsa.sunet.sunet_family = af;
-		bsa.sunet.sunet_addr.sunet_message_type = bind_endpoint_index;
-		err = unet_str_to_addr(bind_endpoint, strlen(bind_endpoint), &bsa.sunet.sunet_addr.sunet_addr);
+		bsa.sunet.sunet_addr.message_type = bind_endpoint_index;
+		err = unet_str_to_addr(bind_endpoint, strlen(bind_endpoint), &bsa.sunet.sunet_addr.addr);
 		if (err == -1) {
 			perror("bad unet bind endpoint address");
 			exit(EXIT_FAILURE);
 		}
 
-		s = asprintf(&e_txt, "%s/%u", endpoint, endpoint_index);
-		s = asprintf(&be_txt, "%s/%u", bind_endpoint, bind_endpoint_index);
+#if 0
+		len = asprintf(&e_txt, "%s/%u", endpoint, endpoint_index);
+		len = asprintf(&be_txt, "%s/%u", bind_endpoint, bind_endpoint_index);
+#endif
 
 	} else if (protocol_is_ipv4(protocol)) {
 		af = AF_INET;
-		if (protocol == protocol_udp) {
+		if (protocol_is_dgram(protocol)) {
 			st = SOCK_DGRAM;
 			sp = IPPROTO_UDP;
-		} else {
+		} else if (protocol_is_stream(protocol)){
 			st = SOCK_STREAM;
 			sp = IPPROTO_TCP;
+		} else if (protocol_is_raw(protocol)) {
+			st = SOCK_RAW;
+			sp = IPPROTO_UDP;
+		} else {
+			errno = -EINVAL;
+			perror("bad protocol type (not dgram/stream/raw)?");
+			exit(EXIT_FAILURE);
 		}
 
 		has_bind = !!bind_endpoint;
@@ -285,8 +189,9 @@ int main(int argc, char *argv[])
 		if (!has_addr)
 			endpoint = "127.0.0.1";
 
+#if 0
 		/* no index? use an ephemeral port */
-		if (!endpoint_index)
+		if (!endpoint_index && server_mode)
 			endpoint_index = 49152 + (rand() % (65536 - 49152));
 
 		/* no index? use an ephemeral port */
@@ -298,9 +203,10 @@ int main(int argc, char *argv[])
 			perror("bad endpoint index(es) option(s)");
 			exit(EXIT_FAILURE);
 		}
+#endif
 
 		sa.sin.sin_family = af;
-		sa.sin.sin_port = htons(endpoint_index);
+		sa.sin.sin_port = endpoint_index ? htons(endpoint_index) : 0;
 		s = inet_pton(af, endpoint, &sa.sin.sin_addr);
 		if (s != 1) {
 			if (s == 0)
@@ -310,7 +216,7 @@ int main(int argc, char *argv[])
 		}
 
 		bsa.sin.sin_family = af;
-		bsa.sin.sin_port = htons(bind_endpoint_index);
+		bsa.sin.sin_port = bind_endpoint_index ? htons(bind_endpoint_index) : 0;
 		s = inet_pton(af, bind_endpoint, &bsa.sin.sin_addr);
 		if (s != 1) {
 			if (s == 0)
@@ -318,20 +224,17 @@ int main(int argc, char *argv[])
 			perror("bad bind endpoint address");
 			exit(EXIT_FAILURE);
 		}
-
-		s = asprintf(&e_txt, "%s:%u", endpoint, endpoint_index);
-		s = asprintf(&be_txt, "%s:%u", bind_endpoint, bind_endpoint_index);
+#if 0
+		len = asprintf(&e_txt, "%s:%u", endpoint, endpoint_index);
+		len = asprintf(&be_txt, "%s:%u", bind_endpoint, bind_endpoint_index);
+#endif
 
 	} else
 		usage("Unknown protocol type");
 
-	printf("Hello uNet World... %s %s%s%s%s%s\n",
+	printf("Hello uNet World... %s %s\n",
 			server_mode ? "server" : "client",
-			protocol_to_txt(protocol),
-			has_addr ? " ep=" : "",
-			has_addr ? e_txt : "",
-			has_bind ? " be=" : "",
-			has_bind ? be_txt : "");
+			protocol_to_txt(protocol));
 
 	s = socket(af, st, sp);
 	if (s == -1) {
@@ -345,6 +248,36 @@ int main(int argc, char *argv[])
 			perror("failed to bind\n");
 			exit(EXIT_FAILURE);
 		}
+
+		/* now get sockname so that we know ports etc */
+		slen = sizeof(bsa);
+		memset(&bsa, 0, sizeof(bsa));
+		err = getsockname(s, &bsa.sa, &slen);
+		if (err == -1) {
+			perror("failed to getsockname\n");
+			exit(EXIT_FAILURE);
+		}
+		p = NULL;
+		if (protocol_is_ipv4(protocol)) {
+			bind_endpoint_index = ntohs(bsa.sin.sin_port);
+			memset(my_addr, 0, sizeof(my_addr));
+			p = inet_ntop(af, &bsa.sin.sin_addr, my_addr, sizeof(my_addr));
+		} else if (protocol_is_unet(protocol)) {
+			bind_endpoint_index = bsa.sunet.sunet_addr.message_type;
+			uatxt = unet_addr_to_str(&bsa.sunet.sunet_addr.addr);
+			if (uatxt) {
+				strncpy(my_addr, uatxt, sizeof(my_addr));
+				free(uatxt);
+				p = my_addr;
+			}
+		}
+		if (!p) {
+			perror("failed to convert my sockaddr to ascii\n");
+			exit(EXIT_FAILURE);
+		}
+
+		len = asprintf(&be_txt, "%s:%u", my_addr, bind_endpoint_index);
+
 		printf("bound to %s\n", be_txt);
 	}
 
@@ -355,7 +288,6 @@ int main(int argc, char *argv[])
 			exit(EXIT_FAILURE);
 		}
 	}
-
 	if (server_mode) {
 		printf("Ctrl-C to exit\n");
 		if (st == SOCK_STREAM || st == SOCK_SEQPACKET) {
@@ -402,13 +334,14 @@ int main(int argc, char *argv[])
 				perror("failed to accept\n");
 				exit(EXIT_FAILURE);
 			}
-		} else {
+		} else if (st == SOCK_DGRAM || st == SOCK_RAW) {
 			slen = sizeof(psa);
 			while ((len = recvfrom(s, buf, sizeof(buf) -1, 0,
 					       &psa.sa, &slen)) > 0) {
 
 				buf[len] = '\0';
-				if (protocol_is_ipv4(protocol)) {
+				if (protocol_is_ipv4(protocol) &&
+				    !protocol_is_raw(protocol)) {
 					peer_index = ntohs(psa.sin.sin_port);
 					p = inet_ntop(af, &psa.sin.sin_addr,
 					              peer_addr,
@@ -423,29 +356,100 @@ int main(int argc, char *argv[])
 					peer_index = 0;
 				}
 
-				printf("recv from %s:%u: %s\n", peer_addr,
-						peer_index, buf);
-
-#if 0
-				len = sendto(s, buf, len, 0, &psa.sa, slen);
-				if (len == -1) {
-					perror("failed to sendto\n");
-					exit(EXIT_FAILURE);
+				if (!protocol_is_raw(protocol))
+					printf("recv from %s:%u: %s\n", peer_addr,
+							peer_index, buf);
+				else {
+					printf("receive raw %u bytes:\n", len);
+					for (i = 0; i < len; i++) {
+						if ((i % 16) == 0)
+							printf("%04x", i);
+						printf(" %02x", buf[i] & 0xff);
+						if ((i % 16) == 15 || (i + 1) == len)
+							printf("\n");
+					}
 				}
-#endif
+
 				slen = sizeof(psa);
 			}
 			if (len == -1) {
 				perror("failed to recvfrom\n");
 				exit(EXIT_FAILURE);
 			}
+		} else if (st == SOCK_RAW) {
+			/* raw mode */
 		}
 	} else {
+
 		err = connect(s, &sa.sa, sizeof(sa));
 		if (err == -1) {
 			perror("failed to connect\n");
 			exit(EXIT_FAILURE);
 		}
+
+		if (!has_bind) {
+			/* now get sockname so that we know ports etc */
+			slen = sizeof(bsa);
+			memset(&bsa, 0, sizeof(bsa));
+			err = getsockname(s, &bsa.sa, &slen);
+			if (err == -1) {
+				perror("failed to getsockname\n");
+				exit(EXIT_FAILURE);
+			}
+			p = NULL;
+			if (protocol_is_ipv4(protocol)) {
+				endpoint_index = ntohs(bsa.sin.sin_port);
+				memset(my_addr, 0, sizeof(my_addr));
+				p = inet_ntop(af, &bsa.sin.sin_addr, my_addr, sizeof(my_addr));
+			} else if (protocol_is_unet(protocol)) {
+				endpoint_index = bsa.sunet.sunet_addr.message_type;
+				uatxt = unet_addr_to_str(&bsa.sunet.sunet_addr.addr);
+				if (uatxt) {
+					strncpy(my_addr, uatxt, sizeof(my_addr));
+					free(uatxt);
+					p = my_addr;
+				}
+			}
+			if (!p) {
+				perror("failed to convert my sockaddr to ascii\n");
+				exit(EXIT_FAILURE);
+			}
+
+			len = asprintf(&be_txt, "%s:%u", my_addr, endpoint_index);
+
+			printf("bound after connect to %s\n", be_txt);
+		}
+
+		/* now get peer so that we know ports etc */
+		slen = sizeof(sa);
+		memset(&sa, 0, sizeof(sa));
+		err = getpeername(s, &sa.sa, &slen);
+		if (err == -1) {
+			perror("failed to getpeername\n");
+			exit(EXIT_FAILURE);
+		}
+		p = NULL;
+		if (protocol_is_ipv4(protocol)) {
+			endpoint_index = ntohs(sa.sin.sin_port);
+			memset(peer_addr, 0, sizeof(peer_addr));
+			p = inet_ntop(af, &sa.sin.sin_addr, peer_addr, sizeof(peer_addr));
+		} else if (protocol_is_unet(protocol)) {
+			endpoint_index = sa.sunet.sunet_addr.message_type;
+			uatxt = unet_addr_to_str(&sa.sunet.sunet_addr.addr);
+			if (uatxt) {
+				strncpy(peer_addr, uatxt, sizeof(peer_addr));
+				free(uatxt);
+				p = my_addr;
+			}
+		}
+		if (!p) {
+			perror("failed to convert peer sockaddr to ascii\n");
+			exit(EXIT_FAILURE);
+		}
+
+		len = asprintf(&e_txt, "%s:%u", peer_addr, endpoint_index);
+
+		printf("connected to %s\n", e_txt);
 
 		while (optind < argc) {
 			p = argv[optind];
