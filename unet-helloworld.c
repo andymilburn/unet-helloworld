@@ -135,14 +135,6 @@ int main(int argc, char *argv[])
 		if (!has_addr)
 			endpoint = "0.1";
 
-		/* no index? use an ephemeral port */
-		if (!endpoint_index)
-			endpoint_index = 65536 + (rand() % 65536);
-
-		/* no index? use an ephemeral port */
-		if (!bind_endpoint_index)
-			bind_endpoint_index = 65536 + (rand() % 65536);
-
 		sa.sunet.sunet_family = af;
 		sa.sunet.sunet_addr.message_type = endpoint_index;
 		err = unet_str_to_addr(endpoint, strlen(endpoint), &sa.sunet.sunet_addr.addr);
@@ -351,9 +343,12 @@ int main(int argc, char *argv[])
 						exit(EXIT_FAILURE);
 					}
 				} else {
-					/* not yet */
-					peer_addr[0] = '\0';
-					peer_index = 0;
+					peer_index = psa.sunet.sunet_addr.message_type;
+					uatxt = unet_addr_to_str(&psa.sunet.sunet_addr.addr);
+					if (uatxt) {
+						strncpy(peer_addr, uatxt, sizeof(peer_addr));
+						free(uatxt);
+					}
 				}
 
 				if (!protocol_is_raw(protocol))
