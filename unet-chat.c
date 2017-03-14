@@ -60,8 +60,8 @@ static void usage(const char *errmsg)
 int main(int argc, char *argv[])
 {
 	int s, err, opt, optidx, len;
-	struct sockaddr_unet server_sa, peer_sa, in_sa;
-	char *server_ua_txt = NULL, *peer_ua_txt = NULL, *p;
+	struct sockaddr_unet server_sa, peer_sa, self_sa, in_sa;
+	char *server_ua_txt = NULL, *peer_ua_txt = NULL, *self_ua_txt = NULL, *p;
 	socklen_t slen;
 	fd_set rfds;
 	bool connected = false;
@@ -89,6 +89,7 @@ int main(int argc, char *argv[])
 	if (optind < argc)
 		server_mode = false;
 
+	memset(&server_sa, 0, sizeof(server_sa));
 	server_sa.sunet_family = AF_UNET;
 	server_sa.sunet_addr.message_type = message_type;
 	err = unet_str_to_addr(server_id, strlen(server_id), &server_sa.sunet_addr.addr);
@@ -105,6 +106,18 @@ int main(int argc, char *argv[])
 	}
 
 	if (server_mode) {
+
+		server_ua_txt = unet_addr_to_str(&server_sa.sunet_addr.addr);
+		if (!server_ua_txt) {
+			perror("failed on unet_addr_to_str()");
+			exit(EXIT_FAILURE);
+		}
+		printf("server binding to '%s'\n", server_ua_txt);
+
+		free(server_ua_txt);
+
+		server_ua_txt = NULL;
+
 		err = bind(s, (struct sockaddr *)&server_sa, sizeof(server_sa));
 		if (err == -1) {
 			fprintf(stderr, "failed to bind using %s server_id (%d:%s)\n",
@@ -112,23 +125,7 @@ int main(int argc, char *argv[])
 			exit(EXIT_FAILURE);
 		}
 
-		/* now get sockname to get the full address */
-		memset(&server_sa, 0, sizeof(server_sa));
-		slen = sizeof(server_sa);
-		err = getsockname(s, (struct sockaddr *)&server_sa, &slen);
-		if (err == -1) {
-			perror("failed on getsockname()");
-			exit(EXIT_FAILURE);
-		}
-
-		server_ua_txt = unet_addr_to_str(&server_sa.sunet_addr.addr);
-		if (!server_ua_txt) {
-			perror("failed on unet_addr_to_str()");
-			exit(EXIT_FAILURE);
-		}
-
 		connected = false;
-
 	} else {
 
 		len = asprintf(&server_ua_txt, "%s:%s", argv[optind], server_id);
@@ -158,12 +155,36 @@ int main(int argc, char *argv[])
 			exit(EXIT_FAILURE);
 		}
 
+		peer_ua_txt = unet_addr_to_str(&peer_sa.sunet_addr.addr);
+		if (!peer_ua_txt) {
+			perror("failed on unet_addr_to_str()");
+			exit(EXIT_FAILURE);
+		}
+
 		connected = true;
+	}
+
+	/* now get sockname to get the full address */
+	memset(&self_sa, 0, sizeof(self_sa));
+	slen = sizeof(self_sa);
+	err = getsockname(s, (struct sockaddr *)&self_sa, &slen);
+	if (err == -1) {
+		perror("failed on getsockname()");
+		exit(EXIT_FAILURE);
+	}
+
+	self_ua_txt = unet_addr_to_str(&self_sa.sunet_addr.addr);
+	if (!self_ua_txt) {
+		perror("failed on unet_addr_to_str()");
+		exit(EXIT_FAILURE);
 	}
 
 	printf("Welcome to unet-chat; %s '%s'\n",
 			server_mode ? "listening for clients in" : "using server",
-			server_ua_txt);
+			server_mode ? self_ua_txt : server_ua_txt);
+	printf("\r%s > ", self_ua_txt);
+	fflush(stdout);
+
 	FD_ZERO(&rfds);
 	for (;;) {
 		FD_SET(STDIN_FILENO, &rfds);
@@ -180,8 +201,16 @@ int main(int argc, char *argv[])
 
 		/* line read */
 		if (FD_ISSET(STDIN_FILENO, &rfds)) {
-			while ((p = fgets(line, sizeof(line) - 1, stdin)) != NULL) {
+			p = fgets(line, sizeof(line) - 1, stdin);
+			if (p) {
 				line[sizeof(line) - 1] = '\0';
+				len = strlen(line);
+				while (len > 0 && line[len-1] == '\n')
+					len--;
+				line[len] = '\0';
+
+				if (!connected)
+					continue;
 
 				len = send(s, p, strlen(p), 0);
 				if (len == -1) {
@@ -189,12 +218,17 @@ int main(int argc, char *argv[])
 					exit(EXIT_FAILURE);
 				}
 			}
+
+			printf("%s > ", self_ua_txt);
+			fflush(stdout);
+
 		} else if (FD_ISSET(s, &rfds)) {
 			/* first server packet */
 
 			slen = sizeof(in_sa);
-			while ((len = recvfrom(s, buf, sizeof(buf) - 1, 0,
-					       (struct sockaddr *)&in_sa, &slen)) > 0) {
+			len = recvfrom(s, buf, sizeof(buf) - 1, 0,
+					       (struct sockaddr *)&in_sa, &slen);
+			if (len > 0) {
 				buf[len] = '\0';
 
 				slen = sizeof(in_sa);
@@ -202,18 +236,20 @@ int main(int argc, char *argv[])
 				if (!connected) {
 					memcpy(&peer_sa, &in_sa, sizeof(in_sa));
 
-					err = connect(s, (struct sockaddr *)&peer_sa, sizeof(peer_sa));
-					if (err == -1) {
-						fprintf(stderr, "failed to connect to full server address (%s) (%d:%s)\n",
-								server_ua_txt, errno, strerror(errno));
-						exit(EXIT_FAILURE);
-					}
-
 					peer_ua_txt = unet_addr_to_str(&peer_sa.sunet_addr.addr);
 					if (!peer_ua_txt) {
 						perror("failed on unet_addr_to_str()");
 						exit(EXIT_FAILURE);
 					}
+
+					err = connect(s, (struct sockaddr *)&peer_sa, sizeof(peer_sa));
+					if (err == -1) {
+						fprintf(stderr, "failed to connect to peer address (%s) (%d:%s)\n",
+								peer_ua_txt, errno, strerror(errno));
+						exit(EXIT_FAILURE);
+					}
+
+					fprintf(stderr, "\nconnection from (%s)\n", peer_ua_txt);
 
 					connected = true;
 				}
@@ -222,7 +258,10 @@ int main(int argc, char *argv[])
 				if (!unet_addr_eq(&peer_sa.sunet_addr.addr, &in_sa.sunet_addr.addr))
 					continue;
 
-				printf("%s> %s\n", peer_ua_txt, buf);
+				printf("\r%*s\r%s> %s\n", 80, "", peer_ua_txt, buf);
+
+				printf("%s > ", self_ua_txt);
+				fflush(stdout);
 			}
 		}
 	}
@@ -233,6 +272,8 @@ int main(int argc, char *argv[])
 		free(server_ua_txt);
 	if (peer_ua_txt)
 		free(peer_ua_txt);
+	if (self_ua_txt)
+		free(self_ua_txt);
 
 	return 0;
 }
