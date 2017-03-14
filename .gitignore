@@ -20,4 +20,5 @@ Makefile.in
 missing
 stamp-h1
 unet-helloworld
+unet-chat
 *.o
