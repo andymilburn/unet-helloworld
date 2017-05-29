@@ -209,8 +209,10 @@ int main(int argc, char *argv[])
 					len--;
 				line[len] = '\0';
 
-				if (!connected)
+                if (!connected) {
+                    perror("not connected, so can't try send\n");
 					continue;
+                }
 
 				len = send(s, p, strlen(p), 0);
 				if (len == -1) {

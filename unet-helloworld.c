@@ -281,10 +281,11 @@ int main(int argc, char *argv[])
 		}
 	}
 	if (server_mode) {
+        /* server mode */
 		printf("Ctrl-C to exit\n");
 		if (st == SOCK_STREAM || st == SOCK_SEQPACKET) {
 			slen = sizeof(psa);
-			while ((cfd = accept(s, &psa.sa, &slen)) != -1) {
+			while ((cfd = accept(s, &psa.sa, &slen)) != -1) { // connect
 				if (protocol_is_ipv4(protocol)) {
 					peer_index = ntohs(psa.sin.sin_port);
 					p = inet_ntop(af, &psa.sin.sin_addr,
@@ -301,7 +302,7 @@ int main(int argc, char *argv[])
 				}
 				printf("Accepted connection from %s:%u\n",
 						peer_addr, peer_index);
-				while ((len = recv(cfd, buf, sizeof(buf) - 1, 0)) > 0) {
+				while ((len = recv(cfd, buf, sizeof(buf) - 1, 0)) > 0) { // reading loop stream or seq
 
 					buf[len] = '\0';
 					printf("recv from %s:%u: %s\n", peer_addr, peer_index, buf);
@@ -329,7 +330,7 @@ int main(int argc, char *argv[])
 		} else if (st == SOCK_DGRAM || st == SOCK_RAW) {
 			slen = sizeof(psa);
 			while ((len = recvfrom(s, buf, sizeof(buf) -1, 0,
-					       &psa.sa, &slen)) > 0) {
+					       &psa.sa, &slen)) > 0) { // reading loop, raw socket
 
 				buf[len] = '\0';
 				if (protocol_is_ipv4(protocol) &&
@@ -371,11 +372,11 @@ int main(int argc, char *argv[])
 				perror("failed to recvfrom\n");
 				exit(EXIT_FAILURE);
 			}
-		} else if (st == SOCK_RAW) {
+		} else if (st == SOCK_RAW) { // WUT -- this can never happen because of the condition above
 			/* raw mode */
 		}
 	} else {
-
+        /* client mode */
 		err = connect(s, &sa.sa, sizeof(sa));
 		if (err == -1) {
 			perror("failed to connect\n");
