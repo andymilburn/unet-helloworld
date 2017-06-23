@@ -125,7 +125,8 @@ char *currentTimeString()
 char stringBuffer[MAX_DATA_SIZE];
 char *randomStringOfSize(int dataSize)
 {
-    for(int i = 0; i < dataSize; i++) {
+    int i;
+    for(i = 0; i < dataSize; i++) {
         stringBuffer[i] = (random() % 64) + 32;
     }
     stringBuffer[dataSize] = 0;
